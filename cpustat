@@ -1,0 +1,99 @@
+#!/usr/bin/env ruby
+
+def usage
+  puts "Usage: cpustat <pid>"
+  exit 1
+end
+usage() unless ARGV.size > 0
+
+$pid = ARGV[0]
+$max_num_samples = nil
+$samples = []
+
+def try_get_cpu_reading(pid)
+  lines = nil
+  
+  pipe = IO.popen("-")
+  if pipe
+    #parent
+    lines = pipe.readlines
+    pipe.close
+  else
+    #child
+    cmd = ["/bin/sh", "-c", "exec /bin/ps -C -o%cpu -p #{pid} 2>/dev/null"]
+    exec(*cmd)
+  end
+
+  return nil unless lines.class == Array
+  return nil unless lines.size > 1
+  
+  raw_reading = lines[1].strip
+  return nil unless raw_reading =~ /\d/
+
+  raw_reading.to_f
+end
+
+def calc_mean(samples)
+  sum = 0
+  samples.each {|x| sum += x.to_f }
+  sum / samples.size.to_f
+end
+
+def calc_sd(samples)
+  n = samples.size
+  return 0.0 if n < 2
+
+  x_m = calc_mean(samples)
+  s   = 0;
+  samples.each {|x_i|
+    xx = (x_i - x_m).to_f
+    s += xx*xx
+  }
+  s /= (n-1).to_f
+  Math.sqrt(s)
+end
+
+def calc_median(samples)
+  x = samples.sort
+  i = samples.size / 2
+  if x.size % 2 == 0
+    return (x[i-1]+x[i])/2
+  else
+    return x[i]
+  end
+end
+
+def do_conclude
+  puts $samples.join(' ')
+  STDERR.puts "sample count  %d" % [$samples.size]
+  STDERR.puts "sample mean   %f" % [calc_mean($samples)]
+  STDERR.puts "sample sd     %f" % [calc_sd($samples)]
+  STDERR.puts "sample median %f" % [calc_median($samples)]
+end
+
+Signal.trap("TERM") do
+  do_conclude()
+  exit(0)
+end
+Signal.trap("INT") do
+  do_conclude()
+  exit(0)
+end
+
+loop {
+  if $samples.size % 10 == 0
+    STDERR.puts "getting %cpu sample ##{$samples.size+1} of pid #{$pid}"
+  end
+
+  cpu_reading = try_get_cpu_reading($pid)
+  break unless cpu_reading
+  
+  $samples << cpu_reading
+  
+  break if ($max_num_samples and $samples.size >= $max_num_samples)
+  
+  sleep 0.5
+}
+
+do_conclude()
+exit(0)
